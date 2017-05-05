@@ -21,6 +21,6 @@ run:
         echo "generating fakes"
         govendor generate +local
     dirs:
-      /go/src/github.com/virtual-go/gopkg.in-src-d-go-git.v4: srcDir
+      /go/src/github.com/golang-interfaces/gopkg.in-src-d-go-git.v4: srcDir
     image: { ref: 'golang:1.8' }
-    workDir: /go/src/github.com/virtual-go/gopkg.in-src-d-go-git.v4
+    workDir: /go/src/github.com/golang-interfaces/gopkg.in-src-d-go-git.v4

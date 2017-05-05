@@ -9,5 +9,5 @@ import (
 
 func Test(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "virtual-go/gopkg.in-src-d-go-git.v4")
+	RunSpecs(t, "golang-interfaces/gopkg.in-src-d-go-git.v4")
 }

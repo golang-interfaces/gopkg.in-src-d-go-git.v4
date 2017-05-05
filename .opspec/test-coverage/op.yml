@@ -57,8 +57,8 @@ run:
           echo "Coverage ok"
         fi
     dirs:
-      /go/src/github.com/virtual-go/gopkg.in-src-d-go-git.v4: srcDir
+      /go/src/github.com/golang-interfaces/gopkg.in-src-d-go-git.v4: srcDir
     envVars:
       MINIMUM_COVERAGE: '50'
     image: { ref: 'golang:1.8' }
-    workDir: /go/src/github.com/virtual-go/gopkg.in-src-d-go-git.v4
+    workDir: /go/src/github.com/golang-interfaces/gopkg.in-src-d-go-git.v4
