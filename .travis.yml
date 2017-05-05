@@ -1,0 +1,8 @@
+language: generic
+sudo: required
+before_script:
+- curl -L https://opctl.opspec.io/latest/opctl-linux.tgz | sudo tar -xzv -C /usr/local/bin
+services:
+- docker
+script:
+- opctl run -a gitBranch=$TRAVIS_BRANCH build
