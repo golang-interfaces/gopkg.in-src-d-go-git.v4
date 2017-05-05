@@ -7,7 +7,7 @@
 
 # features
 
-- API compatible w/ native [os package](https://golang.org/pkg/os/) exposed via interface
+- API compatible w/ [src-d/go-git package](https://github.com/src-d/go-git) exposed via interface
 - fake implementation to allow faking interactions
 
 > *Be advised: this project is currently at Major version zero. Per the
