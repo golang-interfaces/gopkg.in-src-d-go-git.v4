@@ -1,4 +1,4 @@
-package vgit
+package iGit
 
 import (
 	. "github.com/onsi/ginkgo"
