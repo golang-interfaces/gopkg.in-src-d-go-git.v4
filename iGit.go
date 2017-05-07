@@ -1,4 +1,4 @@
-package iGit
+package igit
 
 //go:generate counterfeiter -o fake.go --fake-name Fake ./ IGit
 

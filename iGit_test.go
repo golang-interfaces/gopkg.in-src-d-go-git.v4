@@ -1,4 +1,4 @@
-package iGit
+package igit
 
 import (
 	. "github.com/onsi/ginkgo"
