@@ -19,12 +19,12 @@ run:
         inputs: { srcDir }
         outputs: { srcDir }
     - op:
-        pkg: { ref: fmt-code }
+        pkg: { ref: github.com/opspec-pkgs/golang.fmt#1.0.0 }
         inputs: { srcDir }
         outputs: { srcDir }
     - parallel:
       - op:
-          pkg: { ref: test-lint }
+          pkg: { ref: github.com/opspec-pkgs/golang.vet#1.0.0 }
           inputs: { srcDir }
           outputs: { srcDir }
       - op:
