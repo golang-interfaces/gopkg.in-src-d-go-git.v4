@@ -3,6 +3,7 @@ package file
 
 import (
 	"io"
+	"os"
 	"os/exec"
 
 	"gopkg.in/src-d/go-git.v4/plumbing/transport"
@@ -29,7 +30,9 @@ func NewClient(uploadPackBin, receivePackBin string) transport.Transport {
 	})
 }
 
-func (r *runner) Command(cmd string, ep transport.Endpoint, auth transport.AuthMethod) (common.Command, error) {
+func (r *runner) Command(cmd string, ep transport.Endpoint, auth transport.AuthMethod,
+) (common.Command, error) {
+
 	switch cmd {
 	case transport.UploadPackServiceName:
 		cmd = r.UploadPackBin
@@ -41,12 +44,13 @@ func (r *runner) Command(cmd string, ep transport.Endpoint, auth transport.AuthM
 		return nil, err
 	}
 
-	return &command{cmd: exec.Command(cmd, ep.Path)}, nil
+	return &command{cmd: exec.Command(cmd, ep.Path())}, nil
 }
 
 type command struct {
-	cmd    *exec.Cmd
-	closed bool
+	cmd          *exec.Cmd
+	stderrCloser io.Closer
+	closed       bool
 }
 
 func (c *command) Start() error {
@@ -54,7 +58,12 @@ func (c *command) Start() error {
 }
 
 func (c *command) StderrPipe() (io.Reader, error) {
-	return c.cmd.StderrPipe()
+	// Pipe returned by Command.StderrPipe has a race with Read + Command.Wait.
+	// We use an io.Pipe and close it after the command finishes.
+	r, w := io.Pipe()
+	c.cmd.Stderr = w
+	c.stderrCloser = r
+	return r, nil
 }
 
 func (c *command) StdinPipe() (io.WriteCloser, error) {
@@ -65,16 +74,32 @@ func (c *command) StdoutPipe() (io.Reader, error) {
 	return c.cmd.StdoutPipe()
 }
 
+func (c *command) Kill() error {
+	c.cmd.Process.Kill()
+	return c.Close()
+}
+
 // Close waits for the command to exit.
 func (c *command) Close() error {
 	if c.closed {
 		return nil
 	}
 
-	return c.cmd.Process.Kill()
-}
+	defer func() {
+		c.closed = true
+		_ = c.stderrCloser.Close()
 
-func (c *command) Wait() error {
-	defer func() { c.closed = true }()
-	return c.cmd.Wait()
+	}()
+
+	err := c.cmd.Wait()
+	if _, ok := err.(*os.PathError); ok {
+		return nil
+	}
+
+	// When a repository does not exist, the command exits with code 128.
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+
+	return err
 }
