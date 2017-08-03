@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"gopkg.in/src-d/go-git.v4/plumbing"
+	"gopkg.in/src-d/go-git.v4/plumbing/filemode"
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
 	"gopkg.in/src-d/go-git.v4/plumbing/storer"
 )
@@ -17,8 +18,23 @@ import (
 // from the object storer.
 func Objects(
 	s storer.EncodedObjectStorer,
-	objects []plumbing.Hash,
-	ignore []plumbing.Hash) ([]plumbing.Hash, error) {
+	objs,
+	ignore []plumbing.Hash,
+) ([]plumbing.Hash, error) {
+	ignore, err := objects(s, ignore, nil, true)
+	if err != nil {
+		return nil, err
+	}
+
+	return objects(s, objs, ignore, false)
+}
+
+func objects(
+	s storer.EncodedObjectStorer,
+	objects,
+	ignore []plumbing.Hash,
+	allowMissingObjects bool,
+) ([]plumbing.Hash, error) {
 
 	seen := hashListToSet(ignore)
 	result := make(map[plumbing.Hash]bool)
@@ -31,7 +47,11 @@ func Objects(
 	}
 
 	for _, h := range objects {
-		if err := processObject(s, h, seen, walkerFunc); err != nil {
+		if err := processObject(s, h, seen, ignore, walkerFunc); err != nil {
+			if allowMissingObjects && err == plumbing.ErrObjectNotFound {
+				continue
+			}
+
 			return nil, err
 		}
 	}
@@ -44,8 +64,13 @@ func processObject(
 	s storer.EncodedObjectStorer,
 	h plumbing.Hash,
 	seen map[plumbing.Hash]bool,
+	ignore []plumbing.Hash,
 	walkerFunc func(h plumbing.Hash),
 ) error {
+	if seen[h] {
+		return nil
+	}
+
 	o, err := s.EncodedObject(plumbing.AnyObject, h)
 	if err != nil {
 		return err
@@ -58,12 +83,12 @@ func processObject(
 
 	switch do := do.(type) {
 	case *object.Commit:
-		return reachableObjects(do, seen, walkerFunc)
+		return reachableObjects(do, seen, ignore, walkerFunc)
 	case *object.Tree:
 		return iterateCommitTrees(seen, do, walkerFunc)
 	case *object.Tag:
 		walkerFunc(do.Hash)
-		return processObject(s, do.Target, seen, walkerFunc)
+		return processObject(s, do.Target, seen, ignore, walkerFunc)
 	case *object.Blob:
 		walkerFunc(do.Hash)
 	default:
@@ -81,8 +106,11 @@ func processObject(
 func reachableObjects(
 	commit *object.Commit,
 	seen map[plumbing.Hash]bool,
+	ignore []plumbing.Hash,
 	cb func(h plumbing.Hash)) error {
-	return object.WalkCommitHistory(commit, func(commit *object.Commit) error {
+
+	i := object.NewCommitPreorderIter(commit, ignore)
+	return i.ForEach(func(commit *object.Commit) error {
 		if seen[commit.Hash] {
 			return nil
 		}
@@ -118,6 +146,10 @@ func iterateCommitTrees(
 		}
 		if err != nil {
 			return err
+		}
+
+		if e.Mode == filemode.Submodule {
+			continue
 		}
 
 		if seen[e.Hash] {

@@ -7,9 +7,11 @@ package common
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	stdioutil "io/ioutil"
 	"strings"
 	"time"
 
@@ -22,7 +24,6 @@ import (
 
 const (
 	readErrorSecondsTimeout = 10
-	errLinesBuffer          = 1000
 )
 
 var (
@@ -59,15 +60,16 @@ type Command interface {
 	// Start starts the specified command. It does not wait for it to
 	// complete.
 	Start() error
-	// Wait waits for the command to exit. It must have been started by
-	// Start. The returned error is nil if the command runs, has no
-	// problems copying stdin, stdout, and stderr, and exits with a zero
-	// exit status.
-	Wait() error
 	// Close closes the command and releases any resources used by it. It
-	// can be called to forcibly finish the command without calling to Wait
-	// or to release resources after calling Wait.
+	// will block until the command exits.
 	Close() error
+}
+
+// CommandKiller expands the Command interface, enableing it for being killed.
+type CommandKiller interface {
+	// Kill and close the session whatever the state it is. It will block until
+	// the command is terminated.
+	Kill() error
 }
 
 type client struct {
@@ -102,7 +104,7 @@ type session struct {
 	advRefs       *packp.AdvRefs
 	packRun       bool
 	finished      bool
-	errLines      chan string
+	firstErrLine  chan string
 }
 
 func (c *client) newSession(s string, ep transport.Endpoint, auth transport.AuthMethod) (*session, error) {
@@ -134,26 +136,29 @@ func (c *client) newSession(s string, ep transport.Endpoint, auth transport.Auth
 		Stdin:         stdin,
 		Stdout:        stdout,
 		Command:       cmd,
-		errLines:      c.listenErrors(stderr),
+		firstErrLine:  c.listenFirstError(stderr),
 		isReceivePack: s == transport.ReceivePackServiceName,
 	}, nil
 }
 
-func (c *client) listenErrors(r io.Reader) chan string {
+func (c *client) listenFirstError(r io.Reader) chan string {
 	if r == nil {
 		return nil
 	}
 
-	errLines := make(chan string, errLinesBuffer)
+	errLine := make(chan string, 1)
 	go func() {
 		s := bufio.NewScanner(r)
-		for s.Scan() {
-			line := string(s.Bytes())
-			errLines <- line
+		if s.Scan() {
+			errLine <- s.Text()
+		} else {
+			close(errLine)
 		}
+
+		_, _ = io.Copy(stdioutil.Discard, r)
 	}()
 
-	return errLines
+	return errLine
 }
 
 // AdvertisedReferences retrieves the advertised references from the server.
@@ -178,6 +183,7 @@ func (s *session) handleAdvRefDecodeError(err error) error {
 	// If repository is not found, we get empty stdout and server writes an
 	// error to stderr.
 	if err == packp.ErrEmptyInput {
+		s.finished = true
 		if err := s.checkNotFoundError(); err != nil {
 			return err
 		}
@@ -214,7 +220,7 @@ func (s *session) handleAdvRefDecodeError(err error) error {
 
 // UploadPack performs a request to the server to fetch a packfile. A reader is
 // returned with the packfile content. The reader must be closed after reading.
-func (s *session) UploadPack(req *packp.UploadPackRequest) (*packp.UploadPackResponse, error) {
+func (s *session) UploadPack(ctx context.Context, req *packp.UploadPackRequest) (*packp.UploadPackResponse, error) {
 	if req.IsEmpty() {
 		return nil, transport.ErrEmptyUploadPackRequest
 	}
@@ -229,11 +235,14 @@ func (s *session) UploadPack(req *packp.UploadPackRequest) (*packp.UploadPackRes
 
 	s.packRun = true
 
-	if err := uploadPack(s.Stdin, s.Stdout, req); err != nil {
+	in := s.StdinContext(ctx)
+	out := s.StdoutContext(ctx)
+
+	if err := uploadPack(in, out, req); err != nil {
 		return nil, err
 	}
 
-	r, err := ioutil.NonEmptyReader(s.Stdout)
+	r, err := ioutil.NonEmptyReader(out)
 	if err == ioutil.ErrEmptyReader {
 		if c, ok := s.Stdout.(io.Closer); ok {
 			_ = c.Close()
@@ -246,39 +255,65 @@ func (s *session) UploadPack(req *packp.UploadPackRequest) (*packp.UploadPackRes
 		return nil, err
 	}
 
-	wc := &waitCloser{s.Command}
-	rc := ioutil.NewReadCloser(r, wc)
-
+	rc := ioutil.NewReadCloser(r, s)
 	return DecodeUploadPackResponse(rc, req)
 }
 
-func (s *session) ReceivePack(req *packp.ReferenceUpdateRequest) (*packp.ReportStatus, error) {
+func (s *session) StdinContext(ctx context.Context) io.WriteCloser {
+	return ioutil.NewWriteCloserOnError(
+		ioutil.NewContextWriteCloser(ctx, s.Stdin),
+		s.onError,
+	)
+}
+
+func (s *session) StdoutContext(ctx context.Context) io.Reader {
+	return ioutil.NewReaderOnError(
+		ioutil.NewContextReader(ctx, s.Stdout),
+		s.onError,
+	)
+}
+
+func (s *session) onError(err error) {
+	if k, ok := s.Command.(CommandKiller); ok {
+		_ = k.Kill()
+	}
+
+	_ = s.Close()
+}
+
+func (s *session) ReceivePack(ctx context.Context, req *packp.ReferenceUpdateRequest) (*packp.ReportStatus, error) {
 	if _, err := s.AdvertisedReferences(); err != nil {
 		return nil, err
 	}
 
 	s.packRun = true
 
-	if err := req.Encode(s.Stdin); err != nil {
+	w := s.StdinContext(ctx)
+	if err := req.Encode(w); err != nil {
+		return nil, err
+	}
+
+	if err := w.Close(); err != nil {
 		return nil, err
 	}
 
 	if !req.Capabilities.Supports(capability.ReportStatus) {
 		// If we have neither report-status or sideband, we can only
 		// check return value error.
-		return nil, s.Command.Wait()
+		return nil, s.Command.Close()
 	}
 
 	report := packp.NewReportStatus()
-	if err := report.Decode(s.Stdout); err != nil {
+	if err := report.Decode(s.StdoutContext(ctx)); err != nil {
 		return nil, err
 	}
 
 	if err := report.Error(); err != nil {
+		defer s.Close()
 		return report, err
 	}
 
-	return report, s.Command.Wait()
+	return report, s.Command.Close()
 }
 
 func (s *session) finish() error {
@@ -299,13 +334,11 @@ func (s *session) finish() error {
 	return nil
 }
 
-func (s *session) Close() error {
-	if err := s.finish(); err != nil {
-		_ = s.Command.Close()
-		return nil
-	}
+func (s *session) Close() (err error) {
+	err = s.finish()
 
-	return s.Command.Close()
+	defer ioutil.CheckClose(s.Command, &err)
+	return
 }
 
 func (s *session) checkNotFoundError() error {
@@ -315,7 +348,7 @@ func (s *session) checkNotFoundError() error {
 	select {
 	case <-t.C:
 		return ErrTimeoutExceeded
-	case line, ok := <-s.errLines:
+	case line, ok := <-s.firstErrLine:
 		if !ok {
 			return nil
 		}
@@ -329,10 +362,12 @@ func (s *session) checkNotFoundError() error {
 }
 
 var (
-	githubRepoNotFoundErr    = "ERROR: Repository not found."
-	bitbucketRepoNotFoundErr = "conq: repository does not exist."
-	localRepoNotFoundErr     = "does not appear to be a git repository"
-	gitProtocolNotFoundErr   = "ERR \n  Repository not found."
+	githubRepoNotFoundErr      = "ERROR: Repository not found."
+	bitbucketRepoNotFoundErr   = "conq: repository does not exist."
+	localRepoNotFoundErr       = "does not appear to be a git repository"
+	gitProtocolNotFoundErr     = "ERR \n  Repository not found."
+	gitProtocolNoSuchErr       = "ERR no such repository"
+	gitProtocolAccessDeniedErr = "ERR access denied"
 )
 
 func isRepoNotFoundError(s string) bool {
@@ -349,6 +384,14 @@ func isRepoNotFoundError(s string) bool {
 	}
 
 	if strings.HasPrefix(s, gitProtocolNotFoundErr) {
+		return true
+	}
+
+	if strings.HasPrefix(s, gitProtocolNoSuchErr) {
+		return true
+	}
+
+	if strings.HasPrefix(s, gitProtocolAccessDeniedErr) {
 		return true
 	}
 
@@ -402,13 +445,4 @@ func DecodeUploadPackResponse(r io.ReadCloser, req *packp.UploadPackRequest) (
 	}
 
 	return res, nil
-}
-
-type waitCloser struct {
-	Command Command
-}
-
-// Close waits until the command exits and returns error, if any.
-func (c *waitCloser) Close() error {
-	return c.Command.Wait()
 }
