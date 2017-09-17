@@ -77,6 +77,7 @@
   name = "gopkg.in/src-d/go-git.v4"
   packages = [".","config","internal/revision","plumbing","plumbing/cache","plumbing/filemode","plumbing/format/config","plumbing/format/diff","plumbing/format/gitignore","plumbing/format/idxfile","plumbing/format/index","plumbing/format/objfile","plumbing/format/packfile","plumbing/format/pktline","plumbing/object","plumbing/protocol/packp","plumbing/protocol/packp/capability","plumbing/protocol/packp/sideband","plumbing/revlist","plumbing/storer","plumbing/transport","plumbing/transport/client","plumbing/transport/file","plumbing/transport/git","plumbing/transport/http","plumbing/transport/internal/common","plumbing/transport/server","plumbing/transport/ssh","storage","storage/filesystem","storage/filesystem/internal/dotgit","storage/memory","utils/binary","utils/diff","utils/ioutil","utils/merkletrie","utils/merkletrie/filesystem","utils/merkletrie/index","utils/merkletrie/internal/frame","utils/merkletrie/noder"]
   revision = "f9879dd043f84936a1f8acb8a53b74332a7ae135"
+  version = "v4.0.0-rc15"
 
 [[projects]]
   name = "gopkg.in/warnings.v0"
@@ -93,6 +94,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "c4d6d802e0a43d1ef0d0cf084eece6392a056fca38595bf5a7582f2e5b529443"
+  inputs-digest = "de1d78b2c20a6bb6716f3c7674014a83688fad2062152c261928749813eb4ac6"
   solver-name = "gps-cdcl"
   solver-version = 1
