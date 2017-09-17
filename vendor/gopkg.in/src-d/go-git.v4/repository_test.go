@@ -177,11 +177,32 @@ func (s *RepositorySuite) TestCloneContext(c *C) {
 	c.Assert(err, NotNil)
 }
 
+func (s *RepositorySuite) TestCloneWithTags(c *C) {
+	url := s.GetLocalRepositoryURL(
+		fixtures.ByURL("https://github.com/git-fixtures/tags.git").One(),
+	)
+
+	r, err := Clone(memory.NewStorage(), nil, &CloneOptions{URL: url, Tags: NoTags})
+	c.Assert(err, IsNil)
+
+	remotes, err := r.Remotes()
+	c.Assert(err, IsNil)
+	c.Assert(remotes, HasLen, 1)
+
+	i, err := r.References()
+	c.Assert(err, IsNil)
+
+	var count int
+	i.ForEach(func(r *plumbing.Reference) error { count++; return nil })
+
+	c.Assert(count, Equals, 3)
+}
+
 func (s *RepositorySuite) TestCreateRemoteAndRemote(c *C) {
 	r, _ := Init(memory.NewStorage(), nil)
 	remote, err := r.CreateRemote(&config.RemoteConfig{
 		Name: "foo",
-		URL:  "http://foo/foo.git",
+		URLs: []string{"http://foo/foo.git"},
 	})
 
 	c.Assert(err, IsNil)
@@ -205,7 +226,7 @@ func (s *RepositorySuite) TestDeleteRemote(c *C) {
 	r, _ := Init(memory.NewStorage(), nil)
 	_, err := r.CreateRemote(&config.RemoteConfig{
 		Name: "foo",
-		URL:  "http://foo/foo.git",
+		URLs: []string{"http://foo/foo.git"},
 	})
 
 	c.Assert(err, IsNil)
@@ -348,7 +369,7 @@ func (s *RepositorySuite) TestPlainOpenBareRelativeGitDirFileTrailingGarbage(c *
 
 	altDir, err := ioutil.TempDir("", "plain-open")
 	c.Assert(err, IsNil)
-	err = ioutil.WriteFile(filepath.Join(altDir, ".git"), []byte(fmt.Sprintf("gitdir: %s\nTRAILING", dir)), 0644)
+	err = ioutil.WriteFile(filepath.Join(altDir, ".git"), []byte(fmt.Sprintf("gitdir: %s\nTRAILING", altDir)), 0644)
 	c.Assert(err, IsNil)
 
 	r, err = PlainOpen(altDir)
@@ -426,7 +447,7 @@ func (s *RepositorySuite) TestFetch(c *C) {
 	r, _ := Init(memory.NewStorage(), nil)
 	_, err := r.CreateRemote(&config.RemoteConfig{
 		Name: DefaultRemoteName,
-		URL:  s.GetBasicLocalRepositoryURL(),
+		URLs: []string{s.GetBasicLocalRepositoryURL()},
 	})
 	c.Assert(err, IsNil)
 	c.Assert(r.Fetch(&FetchOptions{}), IsNil)
@@ -449,7 +470,7 @@ func (s *RepositorySuite) TestFetchContext(c *C) {
 	r, _ := Init(memory.NewStorage(), nil)
 	_, err := r.CreateRemote(&config.RemoteConfig{
 		Name: DefaultRemoteName,
-		URL:  s.GetBasicLocalRepositoryURL(),
+		URLs: []string{s.GetBasicLocalRepositoryURL()},
 	})
 	c.Assert(err, IsNil)
 
@@ -531,7 +552,7 @@ func (s *RepositorySuite) TestCloneConfig(c *C) {
 	c.Assert(cfg.Core.IsBare, Equals, true)
 	c.Assert(cfg.Remotes, HasLen, 1)
 	c.Assert(cfg.Remotes["origin"].Name, Equals, "origin")
-	c.Assert(cfg.Remotes["origin"].URL, Not(Equals), "")
+	c.Assert(cfg.Remotes["origin"].URLs, HasLen, 1)
 }
 
 func (s *RepositorySuite) TestCloneSingleBranchAndNonHEAD(c *C) {
@@ -613,23 +634,73 @@ func (s *RepositorySuite) TestCloneDetachedHEAD(c *C) {
 		URL:           s.GetBasicLocalRepositoryURL(),
 		ReferenceName: plumbing.ReferenceName("refs/tags/v1.0.0"),
 	})
+	c.Assert(err, IsNil)
 
 	head, err := r.Reference(plumbing.HEAD, false)
 	c.Assert(err, IsNil)
 	c.Assert(head, NotNil)
 	c.Assert(head.Type(), Equals, plumbing.HashReference)
 	c.Assert(head.Hash().String(), Equals, "6ecf0ef2c2dffb796033e5a02219af86ec6584e5")
+
+	count := 0
+	objects, err := r.Objects()
+	c.Assert(err, IsNil)
+	objects.ForEach(func(object.Object) error { count++; return nil })
+	c.Assert(count, Equals, 31)
+}
+
+func (s *RepositorySuite) TestCloneDetachedHEADAndShallow(c *C) {
+	r, _ := Init(memory.NewStorage(), memfs.New())
+	err := r.clone(context.Background(), &CloneOptions{
+		URL:           s.GetBasicLocalRepositoryURL(),
+		ReferenceName: plumbing.ReferenceName("refs/tags/v1.0.0"),
+		Depth:         1,
+	})
+
+	c.Assert(err, IsNil)
+
+	head, err := r.Reference(plumbing.HEAD, false)
+	c.Assert(err, IsNil)
+	c.Assert(head, NotNil)
+	c.Assert(head.Type(), Equals, plumbing.HashReference)
+	c.Assert(head.Hash().String(), Equals, "6ecf0ef2c2dffb796033e5a02219af86ec6584e5")
+
+	count := 0
+	objects, err := r.Objects()
+	c.Assert(err, IsNil)
+	objects.ForEach(func(object.Object) error { count++; return nil })
+	c.Assert(count, Equals, 15)
+}
+
+func (s *RepositorySuite) TestCloneDetachedHEADAnnotatedTag(c *C) {
+	r, _ := Init(memory.NewStorage(), nil)
+	err := r.clone(context.Background(), &CloneOptions{
+		URL:           s.GetLocalRepositoryURL(fixtures.ByTag("tags").One()),
+		ReferenceName: plumbing.ReferenceName("refs/tags/annotated-tag"),
+	})
+	c.Assert(err, IsNil)
+
+	head, err := r.Reference(plumbing.HEAD, false)
+	c.Assert(err, IsNil)
+	c.Assert(head, NotNil)
+	c.Assert(head.Type(), Equals, plumbing.HashReference)
+	c.Assert(head.Hash().String(), Equals, "f7b877701fbf855b44c0a9e86f3fdce2c298b07f")
+
+	count := 0
+	objects, err := r.Objects()
+	c.Assert(err, IsNil)
+	objects.ForEach(func(object.Object) error { count++; return nil })
+	c.Assert(count, Equals, 7)
 }
 
 func (s *RepositorySuite) TestPush(c *C) {
 	url := c.MkDir()
-	fmt.Println(url)
 	server, err := PlainInit(url, true)
 	c.Assert(err, IsNil)
 
 	_, err = s.Repository.CreateRemote(&config.RemoteConfig{
 		Name: "test",
-		URL:  url,
+		URLs: []string{url},
 	})
 	c.Assert(err, IsNil)
 
@@ -651,13 +722,12 @@ func (s *RepositorySuite) TestPush(c *C) {
 
 func (s *RepositorySuite) TestPushContext(c *C) {
 	url := c.MkDir()
-	fmt.Println(url)
 	_, err := PlainInit(url, true)
 	c.Assert(err, IsNil)
 
 	_, err = s.Repository.CreateRemote(&config.RemoteConfig{
 		Name: "foo",
-		URL:  url,
+		URLs: []string{url},
 	})
 	c.Assert(err, IsNil)
 
@@ -668,6 +738,47 @@ func (s *RepositorySuite) TestPushContext(c *C) {
 		RemoteName: "foo",
 	})
 	c.Assert(err, NotNil)
+}
+
+// installPreReceiveHook installs a pre-receive hook in the .git
+// directory at path which prints message m before exiting
+// successfully.
+func installPreReceiveHook(c *C, path, m string) {
+	hooks := filepath.Join(path, "hooks")
+	err := os.MkdirAll(hooks, 0777)
+	c.Assert(err, IsNil)
+
+	err = ioutil.WriteFile(filepath.Join(hooks, "pre-receive"), preReceiveHook(m), 0777)
+	c.Assert(err, IsNil)
+}
+
+func (s *RepositorySuite) TestPushWithProgress(c *C) {
+	url := c.MkDir()
+	server, err := PlainInit(url, true)
+	c.Assert(err, IsNil)
+
+	m := "Receiving..."
+	installPreReceiveHook(c, url, m)
+
+	_, err = s.Repository.CreateRemote(&config.RemoteConfig{
+		Name: "bar",
+		URLs: []string{url},
+	})
+	c.Assert(err, IsNil)
+
+	var p bytes.Buffer
+	err = s.Repository.Push(&PushOptions{
+		RemoteName: "bar",
+		Progress:   &p,
+	})
+	c.Assert(err, IsNil)
+
+	AssertReferences(c, server, map[string]string{
+		"refs/heads/master": "6ecf0ef2c2dffb796033e5a02219af86ec6584e5",
+		"refs/heads/branch": "e8d3ffab552895c19b9fcf7aa264d277cde33881",
+	})
+
+	c.Assert((&p).Bytes(), DeepEquals, []byte(m))
 }
 
 func (s *RepositorySuite) TestPushDepth(c *C) {
@@ -923,7 +1034,7 @@ func (s *RepositorySuite) TestTags(c *C) {
 	tags.ForEach(func(tag *plumbing.Reference) error {
 		count++
 		c.Assert(tag.Hash().IsZero(), Equals, false)
-		c.Assert(tag.IsTag(), Equals, true)
+		c.Assert(tag.Name().IsTag(), Equals, true)
 		return nil
 	})
 
@@ -944,7 +1055,7 @@ func (s *RepositorySuite) TestBranches(c *C) {
 	branches.ForEach(func(branch *plumbing.Reference) error {
 		count++
 		c.Assert(branch.Hash().IsZero(), Equals, false)
-		c.Assert(branch.IsBranch(), Equals, true)
+		c.Assert(branch.Name().IsBranch(), Equals, true)
 		return nil
 	})
 
@@ -968,7 +1079,7 @@ func (s *RepositorySuite) TestNotes(c *C) {
 	notes.ForEach(func(note *plumbing.Reference) error {
 		count++
 		c.Assert(note.Hash().IsZero(), Equals, false)
-		c.Assert(note.IsNote(), Equals, true)
+		c.Assert(note.Name().IsNote(), Equals, true)
 		return nil
 	})
 
